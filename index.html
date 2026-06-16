@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>⚽ FIFA World Cup 2026</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0a0e1a; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0a0e1a; }
+    ::-webkit-scrollbar-thumb { background: #2a2f4c; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useMemo } = React;
+
+    const API_ORIGIN = "https://api.football-data.org/v4";
+    const CORS_PROXY = "https://corsproxy.io/?url=";
+    const IS_LOCAL = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+    const makeUrl = (path) => IS_LOCAL ? CORS_PROXY + encodeURIComponent(API_ORIGIN + path) : API_ORIGIN + path;
+    const COMPETITION = "WC";
+    const CACHE_KEY = "wc2026_data";
+    const APIKEY_KEY = "wc2026_apikey";
+    const VN_OFFSET = 7 * 60;
+
+    function toVNTime(utcStr) {
+      if (!utcStr) return "";
+      const d = new Date(utcStr);
+      return new Date(d.getTime() + VN_OFFSET * 60000).toISOString().slice(11, 16);
+    }
+    function toVNDate(utcStr) {
+      if (!utcStr) return "";
+      const d = new Date(utcStr);
+      return new Date(d.getTime() + VN_OFFSET * 60000).toISOString().slice(0, 10);
+    }
+    function formatDisplayDate(dateStr) {
+      const [y, m, day] = dateStr.split("-");
+      return new Date(parseInt(y), parseInt(m) - 1, parseInt(day))
+        .toLocaleDateString("vi-VN", { weekday: "long", day: "numeric", month: "numeric", year: "numeric" });
+    }
+
+    const STATUS_MAP = {
+      SCHEDULED: "Chưa đấu",
+      TIMED: "Chưa đấu",
+      IN_PLAY: "Đang đấu",
+      LIVE: "Live",
+      PAUSED: "Nghỉ giữa",
+      FINISHED: "KT",
+      POSTPONED: "Hoãn",
+      SUSPENDED: "Tạm hoãn",
+      CANCELLED: "Hủy",
+    };
+    const isLive = s => ["IN_PLAY","LIVE","PAUSED"].includes(s);
+    const isFinished = s => s === "FINISHED";
+
+    const translateStage = s => {
+      if (!s) return "";
+      return s
+        .replace("GROUP_STAGE","Vòng bảng")
+        .replace("ROUND_OF_32","Vòng 32")
+        .replace("ROUND_OF_16","Vòng 16")
+        .replace("QUARTER_FINALS","Tứ kết")
+        .replace("SEMI_FINALS","Bán kết")
+        .replace("THIRD_PLACE","Hạng 3")
+        .replace("FINAL","Chung kết");
+    };
+
+    function App() {
+      const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem(APIKEY_KEY)||"9e2f6fa7208743db907b516bc0d59858"; } catch { return "9e2f6fa7208743db907b516bc0d59858"; } });
+      const [inputKey, setInputKey] = useState("");
+      const [matches, setMatches] = useState([]);
+      const [standings, setStandings] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState("");
+      const [tab, setTab] = useState("schedule");
+      const [selectedGroup, setSelectedGroup] = useState("ALL");
+      const [filterMode, setFilterMode] = useState("all");
+      const [lastUpdated, setLastUpdated] = useState(null);
+      const [hasLive, setHasLive] = useState(false);
+
+      const fetchMatches = useCallback(async (key) => {
+        if (!key) return;
+        setLoading(true); setError("");
+        try {
+          const res = await fetch(makeUrl(`/competitions/${COMPETITION}/matches`), {
+            headers: { "X-Auth-Token": key }
+          });
+          if (res.status === 403) { setError("API key không hợp lệ hoặc không có quyền truy cập."); setLoading(false); return; }
+          if (res.status === 429) { setError("Quá nhiều request. Vui lòng chờ 1 phút rồi thử lại."); setLoading(false); return; }
+          if (!res.ok) { setError(`Lỗi API: ${res.status}`); setLoading(false); return; }
+          const data = await res.json();
+          if (!data.matches || data.matches.length === 0) { setError("Chưa có dữ liệu trận đấu."); setLoading(false); return; }
+          const live = data.matches.some(m => isLive(m.status));
+          setHasLive(live);
+          setMatches(data.matches);
+          setLastUpdated(new Date());
+          try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), data: data.matches })); } catch {}
+        } catch(e) { setError("Không thể kết nối API. Kiểm tra kết nối mạng."); }
+        setLoading(false);
+      }, []);
+
+      const fetchStandings = useCallback(async (key) => {
+        if (!key) return;
+        try {
+          const res = await fetch(makeUrl(`/competitions/${COMPETITION}/standings`), {
+            headers: { "X-Auth-Token": key }
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+          if (data.standings) setStandings(data.standings);
+        } catch {}
+      }, []);
+
+      useEffect(() => {
+        if (!apiKey) return;
+        try {
+          const cached = localStorage.getItem(CACHE_KEY);
+          if (cached) {
+            const { ts, data } = JSON.parse(cached);
+            if (Date.now()-ts < 5*60*1000) {
+              setMatches(data);
+              setLastUpdated(new Date(ts));
+              setHasLive(data.some(m => isLive(m.status)));
+            }
+          }
+        } catch {}
+        fetchMatches(apiKey);
+        fetchStandings(apiKey);
+      }, [apiKey, fetchMatches, fetchStandings]);
+
+      useEffect(() => {
+        if (!apiKey || !hasLive) return;
+        const t = setInterval(() => fetchMatches(apiKey), 60000);
+        return () => clearInterval(t);
+      }, [apiKey, hasLive, fetchMatches]);
+
+      const handleSaveKey = () => {
+        const k = inputKey.trim(); if (!k) return;
+        try { localStorage.setItem(APIKEY_KEY, k); } catch {}
+        setApiKey(k); setInputKey("");
+      };
+      const handleClearKey = () => {
+        try { localStorage.removeItem(APIKEY_KEY); localStorage.removeItem(CACHE_KEY); } catch {}
+        setApiKey(""); setMatches([]); setStandings([]); setError("");
+      };
+
+      const groups = useMemo(() => {
+        const gs = new Set();
+        matches.forEach(m => { if (m.group) gs.add(m.group.replace("GROUP_","")); });
+        return Array.from(gs).sort();
+      }, [matches]);
+
+      const groupedByDate = useMemo(() => {
+        let filtered = matches;
+        if (selectedGroup !== "ALL") filtered = filtered.filter(m => m.group === `GROUP_${selectedGroup}`);
+        if (filterMode === "results") filtered = filtered.filter(m => isFinished(m.status));
+        else if (filterMode === "upcoming") filtered = filtered.filter(m => !isFinished(m.status));
+        const grouped = {};
+        filtered.forEach(m => {
+          const d = toVNDate(m.utcDate);
+          if (!grouped[d]) grouped[d] = [];
+          grouped[d].push(m);
+        });
+        Object.keys(grouped).forEach(d => grouped[d].sort((a,b) => new Date(a.utcDate)-new Date(b.utcDate)));
+        return grouped;
+      }, [matches, selectedGroup, filterMode]);
+
+      const liveCount = matches.filter(m => isLive(m.status)).length;
+      const btn = (active, color="#f8c740") => ({
+        padding:"5px 10px", borderRadius:6, border:"1px solid",
+        borderColor: active ? color : "#2a2f4c",
+        background: active ? color : "transparent",
+        color: active ? (color==="#f8c740" ? "#0a0e1a" : "#fff") : "#8892b0",
+        cursor:"pointer", fontSize:12, fontWeight:600, transition:"all 0.15s"
+      });
+
+      return (
+        <div style={{ minHeight:"100vh", background:"#0a0e1a", color:"#e8eaf0", fontFamily:"'Segoe UI',system-ui,sans-serif" }}>
+          <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}} @keyframes liveBlink{0%,100%{opacity:1}50%{opacity:.65}} .mrow:hover{border-color:#2a3560!important}`}</style>
+
+          <div style={{ background:"linear-gradient(135deg,#1a1f3c,#0d1226 50%,#1a0d26)", borderBottom:"1px solid #2a2f4c", padding:"18px 16px 0" }}>
+            <div style={{ maxWidth:920, margin:"0 auto" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:14, flexWrap:"wrap" }}>
+                <span style={{ fontSize:32 }}>⚽</span>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:20, fontWeight:800, background:"linear-gradient(90deg,#f8c740,#e8403a,#3a7bd5)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>FIFA WORLD CUP 2026™</div>
+                  <div style={{ fontSize:11, color:"#8892b0", marginTop:2 }}>
+                    🇺🇸 Mỹ · 🇨🇦 Canada · 🇲🇽 Mexico — 11/6 đến 19/7/2026
+                    {lastUpdated && <span style={{ marginLeft:8, color:"#4a5270" }}>· Cập nhật: {lastUpdated.toLocaleTimeString("vi-VN")}</span>}
+                  </div>
+                </div>
+                {apiKey && (
+                  <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                    {liveCount > 0 && <div style={{ background:"#e8403a", color:"#fff", fontSize:11, fontWeight:700, padding:"3px 8px", borderRadius:20, animation:"pulse 1.5s infinite" }}>🔴 {liveCount} LIVE</div>}
+                    <button onClick={() => { fetchMatches(apiKey); fetchStandings(apiKey); }} disabled={loading}
+                      style={{ padding:"6px 12px", borderRadius:6, border:"1px solid #2a2f4c", background:"#1e2540", color: loading ? "#4a5270" : "#8892b0", cursor: loading ? "not-allowed" : "pointer", fontSize:12, fontWeight:600 }}>
+                      {loading ? "⟳ Đang tải..." : "⟳ Làm mới"}
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div style={{ display:"flex" }}>
+                {[["schedule","📅 Lịch thi đấu"],["standings","📊 Bảng xếp hạng"],["setup","🔑 API Key"]].map(([k,label]) => (
+                  <button key={k} onClick={() => setTab(k)} style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontSize:13, fontWeight:600, background:"transparent", color: tab===k ? "#f8c740" : "#8892b0", borderBottom: tab===k ? "2px solid #f8c740" : "2px solid transparent", transition:"all 0.2s", position:"relative" }}>
+                    {label}{k==="setup" && !apiKey && <span style={{ position:"absolute", top:7, right:7, width:6, height:6, borderRadius:"50%", background:"#e8403a" }} />}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ maxWidth:920, margin:"0 auto", padding:"16px" }}>
+            {tab==="setup" && (
+              <div style={{ maxWidth:520, margin:"0 auto" }}>
+                <div style={{ background:"#111829", borderRadius:12, border:"1px solid #1e2340", padding:24 }}>
+                  <div style={{ fontSize:16, fontWeight:700, marginBottom:6 }}>🔑 Cài đặt API Key</div>
+                  <div style={{ fontSize:13, color:"#8892b0", marginBottom:20, lineHeight:1.7 }}>
+                    App dùng <strong style={{ color:"#f8c740" }}>football-data.org</strong> để lấy dữ liệu WC 2026.<br />
+                    Đăng ký miễn phí tại <a href="https://www.football-data.org/client/register" target="_blank" rel="noreferrer" style={{ color:"#3a7bd5" }}>football-data.org/client/register</a> (10 req/phút free).
+                  </div>
+                  <div style={{ display:"flex", gap:8, marginBottom:12 }}>
+                    <input type="password" placeholder="Dán API key vào đây..." value={inputKey} onChange={e => setInputKey(e.target.value)} onKeyDown={e => e.key==="Enter" && handleSaveKey()}
+                      style={{ flex:1, padding:"10px 14px", borderRadius:8, border:"1px solid #2a2f4c", background:"#0d1226", color:"#e8eaf0", fontSize:13, outline:"none" }} />
+                    <button onClick={handleSaveKey} style={{ padding:"10px 18px", borderRadius:8, border:"none", background:"#f8c740", color:"#0a0e1a", fontWeight:700, cursor:"pointer", fontSize:13 }}>Lưu</button>
+                  </div>
+                  {apiKey && (
+                    <div style={{ background:"#0d2010", border:"1px solid #1a4020", borderRadius:8, padding:"10px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                      <div style={{ fontSize:13, color:"#4ec94e" }}>✓ Đã kết nối</div>
+                      <button onClick={handleClearKey} style={{ background:"transparent", border:"1px solid #4a5270", color:"#8892b0", borderRadius:6, padding:"4px 10px", cursor:"pointer", fontSize:12 }}>Xóa key</button>
+                    </div>
+                  )}
+                  <div style={{ padding:14, background:"#0d1226", borderRadius:8, border:"1px dashed #2a2f4c" }}>
+                    <div style={{ fontSize:12, color:"#8892b0", fontWeight:600, marginBottom:8 }}>📋 Hướng dẫn:</div>
+                    {[
+                      "1. Vào football-data.org/client/register và đăng ký tài khoản",
+                      "2. Kiểm tra email, xác nhận tài khoản",
+                      "3. Đăng nhập → vào My Account → copy API Token",
+                      "4. Dán vào ô trên và nhấn Lưu 🎉"
+                    ].map((s,i) => (
+                      <div key={i} style={{ fontSize:12, color:"#4a5270", marginBottom:4 }}>{s}</div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {tab!=="setup" && !apiKey && (
+              <div style={{ textAlign:"center", padding:"60px 20px" }}>
+                <div style={{ fontSize:48, marginBottom:16 }}>🔑</div>
+                <div style={{ fontSize:18, fontWeight:700, marginBottom:8 }}>Cần API Key để tải dữ liệu</div>
+                <div style={{ color:"#8892b0", marginBottom:20, fontSize:14 }}>Đăng ký miễn phí tại football-data.org · không cần thẻ tín dụng</div>
+                <button onClick={() => setTab("setup")} style={{ padding:"10px 24px", borderRadius:8, border:"none", background:"#f8c740", color:"#0a0e1a", fontWeight:700, cursor:"pointer", fontSize:14 }}>Cài đặt API Key →</button>
+              </div>
+            )}
+
+            {error && tab!=="setup" && (
+              <div style={{ background:"#1a0a0a", border:"1px solid #4a1a1a", borderRadius:8, padding:"12px 16px", marginBottom:16, color:"#e86060", fontSize:13 }}>⚠️ {error}</div>
+            )}
+
+            {loading && matches.length===0 && apiKey && (
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {[...Array(8)].map((_,i) => <div key={i} style={{ height:54, borderRadius:10, background:"#111829", animation:"pulse 1.5s infinite" }} />)}
+              </div>
+            )}
+
+            {tab==="schedule" && apiKey && matches.length>0 && (
+              <>
+                <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap", alignItems:"center" }}>
+                  <div style={{ display:"flex", gap:4, flexWrap:"wrap", flex:1 }}>
+                    {["ALL",...groups].map(g => (
+                      <button key={g} onClick={() => setSelectedGroup(g)} style={btn(selectedGroup===g)}>
+                        {g==="ALL" ? "Tất cả" : `Bảng ${g}`}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display:"flex", gap:4 }}>
+                    {[["all","Tất cả"],["results","Kết quả"],["upcoming","Sắp đấu"]].map(([m,l]) => (
+                      <button key={m} onClick={() => setFilterMode(m)} style={btn(filterMode===m,"#3a7bd5")}>{l}</button>
+                    ))}
+                  </div>
+                </div>
+                {Object.keys(groupedByDate).sort().map(date => (
+                  <div key={date} style={{ marginBottom:20 }}>
+                    <div style={{ fontSize:11, fontWeight:700, color:"#8892b0", textTransform:"uppercase", letterSpacing:1, marginBottom:8, paddingBottom:4, borderBottom:"1px solid #1e2340" }}>
+                      {formatDisplayDate(date)}
+                    </div>
+                    <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                      {groupedByDate[date].map(m => <MatchCard key={m.id} match={m} />)}
+                    </div>
+                  </div>
+                ))}
+                {Object.keys(groupedByDate).length===0 && !loading && (
+                  <div style={{ textAlign:"center", color:"#4a5270", padding:40 }}>Không có trận nào</div>
+                )}
+              </>
+            )}
+
+            {tab==="standings" && apiKey && standings.length>0 && (
+              <div style={{ display:"grid", gap:16, gridTemplateColumns:"repeat(auto-fill,minmax(380px,1fr))" }}>
+                {standings.filter(s => s.type==="TOTAL").map((s,i) => <StandingsTable key={i} standing={s} />)}
+              </div>
+            )}
+            {tab==="standings" && apiKey && standings.length===0 && !loading && (
+              <div style={{ textAlign:"center", color:"#4a5270", padding:40 }}>Bảng xếp hạng chưa có dữ liệu — thử làm mới.</div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    function MatchCard({ match: m }) {
+      const status = m.status;
+      const home = m.homeTeam, away = m.awayTeam;
+      const score = m.score?.fullTime;
+      const finished = isFinished(status), live = isLive(status);
+      const time = toVNTime(m.utcDate);
+      const stage = translateStage(m.stage);
+      const homeWin = finished && score?.home > score?.away;
+      const awayWin = finished && score?.away > score?.home;
+
+      return (
+        <div className="mrow" style={{ background: live ? "#0d1a10" : "#111829", borderRadius:10, padding:"10px 14px", border:`1px solid ${live ? "#1a4020" : "#1e2340"}`, display:"flex", alignItems:"center", gap:8, transition:"border-color 0.2s" }}>
+          <div style={{ minWidth:44, fontSize:9, fontWeight:700, color: live ? "#4ec94e" : "#4a5270", textAlign:"center", lineHeight:1.4, flexShrink:0 }}>{stage}</div>
+          <div style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"flex-end", gap:6, minWidth:0 }}>
+            <span style={{ fontSize:13, fontWeight: homeWin ? 700 : 400, color: homeWin ? "#fff" : "#c8ccdc", textAlign:"right", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{home.name}</span>
+            {home.crest && <img src={home.crest} alt="" style={{ width:22, height:22, objectFit:"contain", flexShrink:0 }} onError={e => e.target.style.display='none'} />}
+          </div>
+          <div style={{ textAlign:"center", width:72, flexShrink:0 }}>
+            {finished ? (
+              <div style={{ background:"#0d1226", border:"1px solid #2a2f4c", borderRadius:8, padding:"4px 10px" }}>
+                <span style={{ fontSize:17, fontWeight:800, color: homeWin ? "#4ec94e" : "#c8ccdc" }}>{score?.home ?? "-"}</span>
+                <span style={{ fontSize:12, color:"#4a5270", margin:"0 3px" }}>-</span>
+                <span style={{ fontSize:17, fontWeight:800, color: awayWin ? "#4ec94e" : "#c8ccdc" }}>{score?.away ?? "-"}</span>
+                <div style={{ fontSize:9, color:"#4a5270", marginTop:1 }}>{STATUS_MAP[status]||status}</div>
+              </div>
+            ) : live ? (
+              <div style={{ background:"#0d2010", border:"1px solid #1a5020", borderRadius:8, padding:"4px 10px", animation:"liveBlink 2s infinite" }}>
+                <span style={{ fontSize:17, fontWeight:800, color:"#4ec94e" }}>{score?.home ?? 0}</span>
+                <span style={{ fontSize:12, color:"#4a5270", margin:"0 3px" }}>-</span>
+                <span style={{ fontSize:17, fontWeight:800, color:"#4ec94e" }}>{score?.away ?? 0}</span>
+                <div style={{ fontSize:9, color:"#4ec94e", marginTop:1 }}>{STATUS_MAP[status]||status}</div>
+              </div>
+            ) : (
+              <div style={{ background:"#1a2040", border:"1px solid #2a2f4c", borderRadius:8, padding:"5px 10px" }}>
+                <div style={{ fontSize:14, fontWeight:700, color:"#f8c740" }}>{time}</div>
+                <div style={{ fontSize:9, color:"#4a5270" }}>ICT</div>
+              </div>
+            )}
+          </div>
+          <div style={{ flex:1, display:"flex", alignItems:"center", gap:6, minWidth:0 }}>
+            {away.crest && <img src={away.crest} alt="" style={{ width:22, height:22, objectFit:"contain", flexShrink:0 }} onError={e => e.target.style.display='none'} />}
+            <span style={{ fontSize:13, fontWeight: awayWin ? 700 : 400, color: awayWin ? "#fff" : "#c8ccdc", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{away.name}</span>
+          </div>
+        </div>
+      );
+    }
+
+    function StandingsTable({ standing }) {
+      const groupName = standing.group ? standing.group.replace("GROUP_","Bảng ") : "Bảng";
+      return (
+        <div style={{ background:"#111829", borderRadius:12, border:"1px solid #1e2340", overflow:"hidden" }}>
+          <div style={{ padding:"10px 14px", background:"#0d1226", borderBottom:"1px solid #1e2340", display:"flex", alignItems:"center", gap:8 }}>
+            <div style={{ width:24, height:24, borderRadius:5, background:"#f8c740", display:"flex", alignItems:"center", justifyContent:"center", fontSize:10, fontWeight:900, color:"#0a0e1a" }}>
+              {groupName.replace("Bảng ","")}
+            </div>
+            <div style={{ fontSize:13, fontWeight:700 }}>{groupName}</div>
+          </div>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+            <thead>
+              <tr style={{ background:"#0d1226" }}>
+                {["#","Đội","TĐ","T","H","B","BT","BB","HS","Điểm"].map(h => (
+                  <th key={h} style={{ padding:"6px 5px", color:"#4a5270", fontWeight:600, textAlign: h==="Đội" ? "left" : "center", fontSize:10 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {standing.table.map((r,i) => {
+                const qualify = i < 2;
+                return (
+                  <tr key={r.team.id} style={{ borderTop:"1px solid #1a2040", background: i%2===0 ? "transparent" : "#0d1226" }}>
+                    <td style={{ padding:"7px 5px", textAlign:"center" }}>
+                      <div style={{ width:18, height:18, borderRadius:4, display:"flex", alignItems:"center", justifyContent:"center", background: qualify ? (i===0?"#f8c740":"#3a7bd5") : "transparent", color: qualify ? (i===0?"#0a0e1a":"#fff") : "#4a5270", fontWeight:700, fontSize:10, margin:"auto" }}>{r.position}</div>
+                    </td>
+                    <td style={{ padding:"7px 5px" }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                        {r.team.crest && <img src={r.team.crest} alt="" style={{ width:18, height:18, objectFit:"contain" }} onError={e => e.target.style.display='none'} />}
+                        <span style={{ color:"#e8eaf0", fontWeight: qualify ? 600 : 400 }}>{r.team.name}</span>
+                      </div>
+                    </td>
+                    <td style={{ padding:"7px 5px", textAlign:"center", color:"#8892b0" }}>{r.playedGames}</td>
+                    <td style={{ padding:"7px 5px", textAlign:"center", color: r.won>0 ? "#4ec94e" : "#8892b0" }}>{r.won}</td>
+                    <td style={{ padding:"7px 5px", textAlign:"center", color: r.draw>0 ? "#f8c740" : "#8892b0" }}>{r.draw}</td>
+                    <td style={{ padding:"7px 5px", textAlign:"center", color: r.lost>0 ? "#e8403a" : "#8892b0" }}>{r.lost}</td>
+                    <td style={{ padding:"7px 5px", textAlign:"center", color:"#8892b0" }}>{r.goalsFor}</td>
+                    <td style={{ padding:"7px 5px", textAlign:"center", color:"#8892b0" }}>{r.goalsAgainst}</td>
+                    <td style={{ padding:"7px 5px", textAlign:"center", color: r.goalDifference>=0 ? "#8892b0" : "#e8403a" }}>{r.goalDifference>0?"+":""}{r.goalDifference}</td>
+                    <td style={{ padding:"7px 5px", textAlign:"center", fontWeight:800, color: r.points>0 ? "#f8c740" : "#8892b0" }}>{r.points}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ padding:"6px 10px", background:"#0d1226", borderTop:"1px solid #1e2340", display:"flex", gap:12, fontSize:10, color:"#4a5270", flexWrap:"wrap" }}>
+            <span><span style={{ display:"inline-block", width:8, height:8, borderRadius:2, background:"#f8c740", marginRight:4 }}></span>Nhất bảng</span>
+            <span><span style={{ display:"inline-block", width:8, height:8, borderRadius:2, background:"#3a7bd5", marginRight:4 }}></span>Nhì bảng</span>
+            <span style={{ marginLeft:"auto" }}>BT=Bàn thắng · BB=Bàn bại · HS=Hiệu số</span>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
