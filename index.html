@@ -23,7 +23,7 @@
     const API_ORIGIN = "https://api.football-data.org/v4";
     const CORS_PROXY = "https://corsproxy.io/?url=";
     const IS_LOCAL = location.hostname === "localhost" || location.hostname === "127.0.0.1";
-    const makeUrl = (path) => IS_LOCAL ? CORS_PROXY + encodeURIComponent(API_ORIGIN + path) : API_ORIGIN + path;
+    const makeUrl = (path) => IS_LOCAL ? API_ORIGIN + path : CORS_PROXY + encodeURIComponent(API_ORIGIN + path);
     const COMPETITION = "WC";
     const CACHE_KEY = "wc2026_data";
     const APIKEY_KEY = "wc2026_apikey";
